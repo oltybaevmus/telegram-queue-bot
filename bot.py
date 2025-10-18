@@ -1,108 +1,82 @@
 import json
-import os
+import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils import executor
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
 
-# -------------------------------
-# ВСТАВЬ СВОЙ ТОКЕН
 TOKEN = "8246901324:AAH3FHDKTJpVwPi66aZGU1PBv6R22WxPQL0"
-# -------------------------------
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
-
-# Файл для хранения очереди
 QUEUE_FILE = "queue.json"
 
-# Глобальные переменные
-queue = []
-active_chat_id = None
-active_thread_id = None
-message_with_buttons_id = None
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-# -------------------------------
-# Вспомогательные функции
-# -------------------------------
 def load_queue():
-    global queue
-    if os.path.exists(QUEUE_FILE):
+    try:
         with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-            queue = json.load(f)
-    else:
-        queue = []
+            return json.load(f)
+    except:
+        return []
 
-def save_queue():
+def save_queue(queue):
     with open(QUEUE_FILE, "w", encoding="utf-8") as f:
         json.dump(queue, f, ensure_ascii=False, indent=2)
 
-def build_keyboard():
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("Встать в очередь", callback_data="join"),
-        InlineKeyboardButton("Покинуть очередь", callback_data="leave"),
-        InlineKeyboardButton("Список", callback_data="list"),
-        InlineKeyboardButton("Передумал", callback_data="undo"),
-    )
-    return keyboard
+@dp.message(Command("standup"))
+async def standup(msg: types.Message):
+    q = load_queue()
+    user = msg.from_user.username
 
-def format_queue():
-    if not queue:
-        return "Очередь пуста"
-    return "\n".join(f"{i+1}) @{username}" for i, username in enumerate(queue))
+    if user in q:
+        return await msg.reply("Ты уже в очереди ✅")
 
-# -------------------------------
-# Обработчики
-# -------------------------------
-@dp.message_handler(commands=["start"])
-async def start_handler(message: types.Message):
-    global active_chat_id, active_thread_id, message_with_buttons_id
-    active_chat_id = message.chat.id
-    active_thread_id = message.message_thread_id
-    load_queue()
-    keyboard = build_keyboard()
-    sent_message = await message.reply("Очередь в репорт", reply_markup=keyboard)
-    message_with_buttons_id = sent_message.message_id
-    # Отправляем ID темы и чата пользователю для информации
-    await message.reply(f"chat_id: {active_chat_id}\nthread_id: {active_thread_id}")
+    q.append(user)
+    save_queue(q)
+    await msg.reply(f"Добавил тебя в очередь. Сейчас в очереди: {len(q)} человек(а).")
 
-@dp.callback_query_handler(lambda c: True)
-async def callback_handler(callback_query: types.CallbackQuery):
-    global queue
-    user = callback_query.from_user.username or callback_query.from_user.first_name
-    chat_id = callback_query.message.chat.id
-    thread_id = callback_query.message.message_thread_id
+@dp.message(Command("delete"))
+async def delete_me(msg: types.Message):
+    q = load_queue()
+    user = msg.from_user.username
 
-    # Проверяем, что мы работаем только в одной теме
-    if chat_id != active_chat_id or thread_id != active_thread_id:
-        await callback_query.answer("Этот бот работает только в своей теме", show_alert=True)
-        return
+    if user not in q:
+        return await msg.reply("Тебя нет в очереди 😉")
 
-    load_queue()
+    q.remove(user)
+    save_queue(q)
+    await msg.reply("Удалил тебя из очереди.")
 
-    if callback_query.data == "join":
-        if user not in queue:
-            queue.append(user)
-            save_queue()
-        await callback_query.answer()  # тихо, без ответа
+@dp.message(Command("list"))
+async def list_queue(msg: types.Message):
+    q = load_queue()
+    if not q:
+        return await msg.reply("Сейчас никто не в очереди. Напиши /standup, чтобы начать.")
+    txt = "\n".join([f"{i+1}) @{u}" for i, u in enumerate(q)])
+    await msg.reply(f"Текущая очередь:\n{txt}")
 
-    elif callback_query.data in ["leave", "undo"]:
-        if user in queue:
-            queue.remove(user)
-            save_queue()
-            # Если есть следующий в очереди — уведомляем
-            if queue:
-                next_user = queue[0]
-                await bot.send_message(chat_id, f"@{next_user}, бери отчет", message_thread_id=thread_id)
-        await callback_query.answer()  # тихо
+@dp.message(Command("finished"))
+async def finished(msg: types.Message):
+    q = load_queue()
+    user = msg.from_user.username
 
-    elif callback_query.data == "list":
-        await bot.send_message(chat_id, format_queue(), message_thread_id=thread_id)
-        await callback_query.answer()  # тихо
+    if not q:
+        return await msg.reply("Очередь пустая.")
 
-# -------------------------------
-# Запуск
-# -------------------------------
+    if q[0] != user:
+        return await msg.reply("Сначала дождись своей очереди 🙂")
+
+    # удаляем первого
+    q.pop(0)
+    save_queue(q)
+
+    # если теперь очередь не пустая — тегаем следующего
+    if q:
+        next_user = q[0]
+        await msg.answer(f"@{next_user} твоя очередь")
+
+async def main():
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
-    load_queue()
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
+
