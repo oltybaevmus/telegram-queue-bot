@@ -235,11 +235,11 @@ async def cmd_takereport(message: types.Message):
     async with _get_chat_lock(key):
         queue = await load_queue_for_key(key)
         if not queue:
-            await message.reply("Очередь пуста.")
+            await message.reply("Очередь пустая")
             return
         idx = _find_index_by_user(queue, uid)
         if idx is None:
-            await message.reply("Пока ты не в очереди.")
+            await message.reply("Пока ты не в очереди. Чтобы встать нажми /standup")
             return
         if idx != 0:
             await message.reply("Пока не твоя очередь 🙂 Я напишу, когда подойдет твой момент.")
@@ -263,7 +263,7 @@ async def cmd_takereport(message: types.Message):
 
         # if warning was sent before they pressed -> send fun text
         if warning_was_sent:
-            await message.reply("Слава богу ты пришел, ахахах")
+            await message.reply("Слава богу ты пришел(ла), ахахах")
 
 @dp.message(Command("finished"))
 async def cmd_finished(message: types.Message):
