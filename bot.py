@@ -285,7 +285,7 @@ async def cmd_finished(message: types.Message):
             return
         idx = _find_index_by_user(queue, uid)
         if idx is None:
-            await message.reply("Тебя нет в очереди.")
+            await message.reply("Тебя нет в очереди. Чтобы встать в очередь нажми /standup")
             return
         if idx != 0:
             await message.reply("Сначала дождись своей очереди 🙂")
