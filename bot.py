@@ -147,14 +147,14 @@ async def _schedule_skip_sequence(chat_id: int, thread_id: Optional[int], key: s
                 await save_queue_for_key(key, queue)
                 mention_removed = _mention_html(removed)
                 try:
-                    await bot.send_message(chat_id, f"{mention_removed} удален из очереди из-за тишины.", parse_mode=ParseMode.HTML, message_thread_id=thread_id)
+                    await bot.send_message(chat_id, f"{mention_removed} Я устал ждать тебя и удалил из очереди. Теперь, чтобы вернуться в очередь нажми /standup", parse_mode=ParseMode.HTML, message_thread_id=thread_id)
                 except Exception:
                     pass
                 # notify next and schedule for them
                 if queue:
                     next_entry = queue[0]
                     next_mention = _mention_html(next_entry)
-                    notify_text = f"{next_mention} твоя очередь. Когда зайдешь в отчет, нажми /takereport"
+                    notify_text = f"{next_mention} Твоя очередь. Когда зайдешь в отчет, нажми /takereport"
                     try:
                         await bot.send_message(chat_id, notify_text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
                     except Exception:
@@ -208,11 +208,11 @@ async def cmd_standup(message: types.Message):
         # If became first (len==1) -> immediate instruction (per choice 1:B)
         if len(queue) == 1:
             mention = _mention_html(entry)
-            text = f"{mention} ты первый. Когда зайдешь в отчет, нажми /takereport"
+            text = f"{mention} Ты первый(ая). Когда зайдешь в отчет, нажми /takereport"
             try:
                 await bot.send_message(chat.id, text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
             except Exception:
-                await message.reply("Ты первый. Когда зайдешь в отчет, нажми /takereport")
+                await message.reply("Ты первый(ая). Когда зайдешь в отчет, нажми /takereport")
             # schedule skip timers for this first user
             await _schedule_skip_sequence(chat.id, thread_id, key, entry)
         else:
@@ -259,7 +259,7 @@ async def cmd_takereport(message: types.Message):
         await save_queue_for_key(key, queue)
 
         # reply to takereport
-        await message.reply("Ты взял отчет. Когда закончишь, нажми /finished")
+        await message.reply("Ты взял(а) отчет. Когда закончишь, нажми /finished")
 
         # if warning was sent before they pressed -> send fun text
         if warning_was_sent:
@@ -306,7 +306,7 @@ async def cmd_finished(message: types.Message):
         if queue:
             next_entry = queue[0]
             next_mention = _mention_html(next_entry)
-            notify_text = f"{next_mention} твоя очередь. Когда зайдешь в отчет, нажми /takereport"
+            notify_text = f"{next_mention} Твоя очередь. Когда зайдешь в отчет, нажми /takereport"
             try:
                 await bot.send_message(chat.id, notify_text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
             except Exception:
@@ -342,7 +342,7 @@ async def cmd_delete(message: types.Message):
         removed = queue.pop(idx)
         await save_queue_for_key(key, queue)
         await _cancel_pending_for_user(key, uid)
-        await message.reply("Удалил тебя из очереди.")
+        await message.reply("Я устал ждать тебя и удалил из очереди. Теперь, чтобы вернуться в очередь нажми /standup")
 
 @dp.message(Command("list"))
 async def cmd_list(message: types.Message):
@@ -358,7 +358,7 @@ async def cmd_list(message: types.Message):
     async with _get_chat_lock(key):
         queue = await load_queue_for_key(key)
         if not queue:
-            await message.reply("Сейчас никто не в очереди. Напиши /standup, чтобы начать.")
+            await message.reply("Сейчас никого нет в очереди. Нажми /standup, чтобы начать.")
             return
         lines = []
         for i, e in enumerate(queue, start=1):
