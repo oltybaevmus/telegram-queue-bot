@@ -281,7 +281,7 @@ async def cmd_finished(message: types.Message):
     async with _get_chat_lock(key):
         queue = await load_queue_for_key(key)
         if not queue:
-            await message.reply("Очередь пустая.")
+            await message.reply("Очередь пустая. Чтобы встать в очередь нажми /standup")
             return
         idx = _find_index_by_user(queue, uid)
         if idx is None:
