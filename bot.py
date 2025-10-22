@@ -79,7 +79,7 @@ async def remind_user_in_report(chat_id, user_id, username):
 
     await bot.send_message(
         chat_id,
-        f"@{username}, ты еще в отчете? Если да, нажми /da, если нет, нажми /no"",
+        f"@{username}, ты еще в отчете? Если да, нажми /da, если нет, нажми /no",
         message_thread_id=THREAD_ID
     )
 
