@@ -1,390 +1,275 @@
-import os
-import json
 import asyncio
-from datetime import datetime
-from typing import Dict, List, Optional, Any
-
+import json
+import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.enums import ParseMode
 
-# ---------------- CONFIG ----------------
-# ВСТАВЬ СВОЙ ТОКЕН (тот, который ты предоставил)
 TOKEN = "8246901324:AAH3FHDKTJpVwPi66aZGU1PBv6R22WxPQL0"
 
-QUEUE_FILE = "queue.json"
-# Тайминги (в секундах)
-WARNING_DELAY = 5 * 60      # 5 минут до предупреждения
-DELETION_DELAY = 5 * 60     # ещё 5 минут до удаления после предупреждения
-# ----------------------------------------
-
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# In-memory structures for timers and locks
-# _pending_timers[key][user_id] = {"task": asyncio.Task, "warning_sent": bool}
-_pending_timers: Dict[str, Dict[int, Dict[str, Any]]] = {}
-_storage_lock = asyncio.Lock()
-_chat_locks: Dict[str, asyncio.Lock] = {}
+QUEUE_FILE = "queue.json"
 
-# ---------------- Helpers ----------------
-def _chat_key(chat_id: int, thread_id: Optional[int]) -> str:
-    tid = thread_id if thread_id is not None else 0
-    return f"{chat_id}_{tid}"
+# Укажи ID темы, где бот должен всегда отвечать
+THREAD_ID = 8  # ← замени на нужный ID темы (из ссылки t.me/c/.../<вот это число>)
 
-def _get_chat_lock(key: str) -> asyncio.Lock:
-    if key not in _chat_locks:
-        _chat_locks[key] = asyncio.Lock()
-    return _chat_locks[key]
+# Тайминги
+FIRST_REMINDER = 5 * 60   # 5 минут
+SECOND_REMINDER = 5 * 60  # ещё 5 минут после первого
+REPORT_TIMEOUT = 30 * 60  # 30 минут в отчёте
+RESPONSE_TIMEOUT = 10 * 60  # 10 минут на ответ после вопроса "ты ещё в отчёте?"
 
-def _find_index_by_user(queue: List[Dict], user_id: int) -> Optional[int]:
-    for i, e in enumerate(queue):
-        if int(e.get("user_id")) == int(user_id):
-            return i
-    return None
 
-def _entry_display(e: Dict) -> str:
-    username = e.get("username")
-    first_name = e.get("first_name") or "Пользователь"
-    return f"@{username}" if username else first_name
+# ------------------- Работа с очередью -------------------
+def load_queue():
+    if os.path.exists(QUEUE_FILE):
+        with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
 
-def _mention_html(e: Dict) -> str:
-    if e.get("username"):
-        return f"@{e['username']}"
-    return f'<a href="tg://user?id={e["user_id"]}">{e.get("first_name") or "Пользователь"}</a>'
 
-# ---------------- Storage ----------------
-async def _ensure_storage_exists():
-    async with _storage_lock:
-        if not os.path.exists(QUEUE_FILE):
-            with open(QUEUE_FILE, "w", encoding="utf-8") as f:
-                json.dump({}, f, ensure_ascii=False, indent=2)
+def save_queue(queue):
+    with open(QUEUE_FILE, "w", encoding="utf-8") as f:
+        json.dump(queue, f, ensure_ascii=False, indent=2)
 
-async def _read_storage() -> Dict[str, List[Dict]]:
-    async with _storage_lock:
-        try:
-            with open(QUEUE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            return {}
-    return {}
 
-async def _write_storage(data: Dict[str, List[Dict]]):
-    async with _storage_lock:
-        tmp = QUEUE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, QUEUE_FILE)
+# ------------------- Напоминания -------------------
+async def remind_to_take_report(chat_id, user_id, username):
+    await asyncio.sleep(FIRST_REMINDER)
+    queue = load_queue()
 
-async def load_queue_for_key(key: str) -> List[Dict]:
-    data = await _read_storage()
-    return data.get(key, [])
+    if not queue or queue[0]["id"] != user_id or queue[0]["status"] != "waiting":
+        return
 
-async def save_queue_for_key(key: str, queue: List[Dict]):
-    data = await _read_storage()
-    data[key] = queue
-    await _write_storage(data)
+    await bot.send_message(
+        chat_id,
+        f"@{username}, твоя очередь! Если не нажмешь /takereport в течение 5 минут, я буду вынужден удалить тебя из очереди😔.",
+        message_thread_id=THREAD_ID
+    )
 
-# ---------------- Pending timers management ----------------
-def _ensure_pending_for(key: str):
-    if key not in _pending_timers:
-        _pending_timers[key] = {}
+    await asyncio.sleep(SECOND_REMINDER)
+    queue = load_queue()
+    if not queue or queue[0]["id"] != user_id or queue[0]["status"] != "waiting":
+        return
 
-async def _cancel_pending_for_user(key: str, user_id: int):
-    _ensure_pending_for(key)
-    info = _pending_timers[key].get(user_id)
-    if info:
-        task = info.get("task")
-        if task and not task.done():
-            task.cancel()
-    _pending_timers[key].pop(user_id, None)
+    queue.pop(0)
+    save_queue(queue)
+    await bot.send_message(
+        chat_id,
+        f"@{username}, я устал ждать тебя и удалил из очереди 🫣. Если захочешь вернуться, нажми /standup",
+        message_thread_id=THREAD_ID
+    )
 
-async def _schedule_skip_sequence(chat_id: int, thread_id: Optional[int], key: str, user_entry: Dict):
-    """
-    Launch 5min warning + 5min deletion sequence for the given user (who was notified).
-    """
-    _ensure_pending_for(key)
-    user_id = int(user_entry["user_id"])
-    # cancel existing
-    await _cancel_pending_for_user(key, user_id)
+    if queue:
+        next_user = queue[0]["username"]
+        await bot.send_message(
+            chat_id,
+            f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
+            message_thread_id=THREAD_ID
+        )
 
-    async def sequence():
-        try:
-            # first wait
-            await asyncio.sleep(WARNING_DELAY)
-            async with _get_chat_lock(key):
-                queue = await load_queue_for_key(key)
-                if not queue or _find_index_by_user(queue, user_id) != 0:
-                    return
-                if queue[0].get("status") == "in_report":
-                    return
-                # send warning with tag (per choice A)
-                mention = _mention_html(queue[0])
-                warn_text = (f"{mention} твоя очередь, если ты не нажмешь /takereport, "
-                             f"то через 5 минут я буду вынужден тебя удалить из очереди.")
-                try:
-                    await bot.send_message(chat_id, warn_text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
-                except Exception:
-                    pass
-                # mark warning_sent
-                if key not in _pending_timers:
-                    _ensure_pending_for(key)
-                if user_id in _pending_timers.get(key, {}):
-                    _pending_timers[key][user_id]["warning_sent"] = True
 
-            # second wait
-            await asyncio.sleep(DELETION_DELAY)
-            async with _get_chat_lock(key):
-                queue = await load_queue_for_key(key)
-                if not queue or _find_index_by_user(queue, user_id) != 0:
-                    return
-                if queue[0].get("status") == "in_report":
-                    return
-                # remove and announce removal
-                removed = queue.pop(0)
-                await save_queue_for_key(key, queue)
-                mention_removed = _mention_html(removed)
-                try:
-                    await bot.send_message(chat_id, f"{mention_removed} Я устал ждать тебя и удалил из очереди. Теперь, чтобы вернуться в очередь нажми /standup", parse_mode=ParseMode.HTML, message_thread_id=thread_id)
-                except Exception:
-                    pass
-                # notify next and schedule for them
-                if queue:
-                    next_entry = queue[0]
-                    next_mention = _mention_html(next_entry)
-                    notify_text = f"{next_mention} Твоя очередь. Когда зайдешь в отчет, нажми /takereport"
-                    try:
-                        await bot.send_message(chat_id, notify_text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
-                    except Exception:
-                        pass
-                    # schedule for new next
-                    await _schedule_skip_sequence(chat_id, thread_id, key, next_entry)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            return
-        finally:
-            if key in _pending_timers:
-                _pending_timers[key].pop(user_id, None)
+async def remind_user_in_report(chat_id, user_id, username):
+    await asyncio.sleep(REPORT_TIMEOUT)
+    queue = load_queue()
 
-    task = asyncio.create_task(sequence())
-    _pending_timers[key][user_id] = {"task": task, "warning_sent": False}
+    if not queue or queue[0]["id"] != user_id or queue[0]["status"] != "in_progress":
+        return
 
-# ---------------- Commands ----------------
+    await bot.send_message(
+        chat_id,
+        f"@{username}, ты еще в отчете? Если да, нажми /da, если нет, нажми /no"",
+        message_thread_id=THREAD_ID
+    )
 
+    queue[0]["awaiting_response"] = True
+    save_queue(queue)
+
+    await asyncio.sleep(RESPONSE_TIMEOUT)
+    queue = load_queue()
+
+    if queue and queue[0]["id"] == user_id and queue[0].get("awaiting_response"):
+        queue.pop(0)
+        save_queue(queue)
+        await bot.send_message(
+            chat_id,
+            f"@{username}, я не дождался твоего ответа и удалил тебя из очереди🫣. "
+            f"Если захочешь вернуться, нажми /standup",
+            message_thread_id=THREAD_ID
+        )
+        if queue:
+            next_user = queue[0]["username"]
+            await bot.send_message(
+                chat_id,
+                f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
+                message_thread_id=THREAD_ID
+            )
+
+
+# ------------------- Команды -------------------
 @dp.message(Command("standup"))
 async def cmd_standup(message: types.Message):
-    """
-    Add user to queue. If became first -> notify and schedule timers.
-    If first and single -> immediately instruct to press /takereport.
-    """
-    chat = message.chat
-    thread_id = getattr(message, "message_thread_id", None)
-    key = _chat_key(chat.id, thread_id)
+    chat_id = message.chat.id
+    queue = load_queue()
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
 
-    user = message.from_user
-    uid = int(user.id)
-    username = user.username
-    first_name = user.first_name or ""
+    if any(u["id"] == user_id for u in queue):
+        await bot.send_message(chat_id, "Ты уже в очереди 👍", message_thread_id=THREAD_ID)
+        return
 
-    async with _get_chat_lock(key):
-        queue = await load_queue_for_key(key)
-        if _find_index_by_user(queue, uid) is not None:
-            await message.reply("Ты уже в очереди ✅")
-            return
+    queue.append({"id": user_id, "username": username, "status": "waiting"})
+    save_queue(queue)
 
-        entry = {
-            "user_id": uid,
-            "username": username,
-            "first_name": first_name,
-            "status": "waiting",  # waiting | in_report
-            "joined_at": datetime.utcnow().isoformat(),
-        }
-        queue.append(entry)
-        await save_queue_for_key(key, queue)
+    position = len(queue)
+    await bot.send_message(
+        chat_id,
+        f"Добавил тебя в очередь, твоя позиция {position}. Сейчас в очереди {len(queue)} человек(а).",
+        message_thread_id=THREAD_ID
+    )
 
-        # If became first (len==1) -> immediate instruction (per choice 1:B)
-        if len(queue) == 1:
-            mention = _mention_html(entry)
-            text = f"{mention} Ты первый(ая). Когда зайдешь в отчет, нажми /takereport"
-            try:
-                await bot.send_message(chat.id, text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
-            except Exception:
-                await message.reply("Ты первый(ая). Когда зайдешь в отчет, нажми /takereport")
-            # schedule skip timers for this first user
-            await _schedule_skip_sequence(chat.id, thread_id, key, entry)
-        else:
-            # Inform with total count (choice D earlier)
-            await message.reply(f"Добавил тебя в очередь. Сейчас в очереди {len(queue)} человек(а).")
+    if len(queue) == 1:
+        await bot.send_message(
+            chat_id,
+            f"@{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
+            message_thread_id=THREAD_ID
+        )
+        asyncio.create_task(remind_to_take_report(chat_id, user_id, username))
+
 
 @dp.message(Command("takereport"))
 async def cmd_takereport(message: types.Message):
-    """
-    Can be used only by first. Marks status in_report (does not remove).
-    Cancels pending timers for this user. If warning was sent, special text is sent.
-    """
-    chat = message.chat
-    thread_id = getattr(message, "message_thread_id", None)
-    key = _chat_key(chat.id, thread_id)
+    chat_id = message.chat.id
+    queue = load_queue()
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
 
-    user = message.from_user
-    uid = int(user.id)
+    if not queue:
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать в очередь нажми /standup.", message_thread_id=THREAD_ID)
+        return
 
-    async with _get_chat_lock(key):
-        queue = await load_queue_for_key(key)
-        if not queue:
-            await message.reply("Очередь пустая")
-            return
-        idx = _find_index_by_user(queue, uid)
-        if idx is None:
-            await message.reply("Пока ты не в очереди. Чтобы встать нажми /standup")
-            return
-        if idx != 0:
-            await message.reply("Пока не твоя очередь 🙂 Я напишу, когда подойдет твой момент.")
-            return
-        if queue[0].get("status") == "in_report":
-            await message.reply("Ты уже в отчете. Когда закончишь, нажми /finished")
-            return
+    if queue[0]["id"] != user_id:
+        await bot.send_message(chat_id, "Ну куда ты, пока не твоя очередь, подожди чуть-чуть 😅", message_thread_id=THREAD_ID)
+        return
 
-        # Cancel pending timers
-        warning_was_sent = False
-        if key in _pending_timers and uid in _pending_timers[key]:
-            warning_was_sent = _pending_timers[key][uid].get("warning_sent", False)
-        await _cancel_pending_for_user(key, uid)
+    if queue[0]["status"] == "waiting":
+        await bot.send_message(chat_id, "Слава богу ты пришел(ла) 😂", message_thread_id=THREAD_ID)
 
-        # mark in_report and keep in queue (do not remove)
-        queue[0]["status"] = "in_report"
-        await save_queue_for_key(key, queue)
+    queue[0]["status"] = "in_progress"
+    queue[0]["awaiting_response"] = False
+    save_queue(queue)
 
-        # reply to takereport
-        await message.reply("Ты взял(а) отчет. Когда закончишь, нажми /finished")
+    await bot.send_message(chat_id, "Ты взял(а) отчет. Когда закончишь, нажми /finished", message_thread_id=THREAD_ID)
+    asyncio.create_task(remind_user_in_report(chat_id, user_id, username))
 
-        # if warning was sent before they pressed -> send fun text
-        if warning_was_sent:
-            await message.reply("Слава богу ты пришел(ла), ахахах")
 
 @dp.message(Command("finished"))
 async def cmd_finished(message: types.Message):
-    """
-    Can be used only if user is first and in_report.
-    Removes first, cancels timers, notifies next and schedules timers for next.
-    """
-    chat = message.chat
-    thread_id = getattr(message, "message_thread_id", None)
-    key = _chat_key(chat.id, thread_id)
+    chat_id = message.chat.id
+    queue = load_queue()
+    user_id = message.from_user.id
 
-    user = message.from_user
-    uid = int(user.id)
+    if not queue:
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать, нажми /standup.", message_thread_id=THREAD_ID)
+        return
 
-    async with _get_chat_lock(key):
-        queue = await load_queue_for_key(key)
-        if not queue:
-            await message.reply("Очередь пустая. Чтобы встать в очередь нажми /standup")
-            return
-        idx = _find_index_by_user(queue, uid)
-        if idx is None:
-            await message.reply("Тебя нет в очереди. Чтобы встать в очередь нажми /standup")
-            return
-        if idx != 0:
-            await message.reply("Сначала дождись своей очереди 🙂")
-            return
-        if queue[0].get("status") != "in_report":
-            await message.reply("Сначала зайди в отчет через /takereport, затем используй /finished.")
-            return
+    if queue[0]["id"] != user_id:
+        await bot.send_message(chat_id, "Понимаю, что не терпится, но ты не первый в очереди. Погоди немного 😁", message_thread_id=THREAD_ID)
+        return
 
-        # remove first
-        finished_entry = queue.pop(0)
-        await save_queue_for_key(key, queue)
+    queue.pop(0)
+    save_queue(queue)
 
-        # cancel any timers for finished user
-        await _cancel_pending_for_user(key, uid)
+    if not queue:
+        await bot.send_message(
+            chat_id,
+            "В очереди никого нет, и я скучаю 😢 Нажми /standup, чтобы встать в очередь.",
+            message_thread_id=THREAD_ID
+        )
+    else:
+        next_user = queue[0]["username"]
+        await bot.send_message(
+            chat_id,
+            f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
+            message_thread_id=THREAD_ID
+        )
 
-        # Do NOT tag the one who finished (per spec)
-        # Notify next if exists
-        if queue:
-            next_entry = queue[0]
-            next_mention = _mention_html(next_entry)
-            notify_text = f"{next_mention} Твоя очередь. Когда зайдешь в отчет, нажми /takereport"
-            try:
-                await bot.send_message(chat.id, notify_text, parse_mode=ParseMode.HTML, message_thread_id=thread_id)
-            except Exception:
-                await message.reply(notify_text, parse_mode=ParseMode.HTML)
-            # schedule skip sequence for the new next
-            await _schedule_skip_sequence(chat.id, thread_id, key, next_entry)
-        else:
-            # if queue empty -> silent
-            pass
-
-@dp.message(Command("delete"))
-async def cmd_delete(message: types.Message):
-    """
-    Delete self from queue if not first. If first -> forbidden and suggest /finished.
-    """
-    chat = message.chat
-    thread_id = getattr(message, "message_thread_id", None)
-    key = _chat_key(chat.id, thread_id)
-
-    user = message.from_user
-    uid = int(user.id)
-
-    async with _get_chat_lock(key):
-        queue = await load_queue_for_key(key)
-        idx = _find_index_by_user(queue, uid)
-        if idx is None:
-            await message.reply("Тебя нет в очереди 😉")
-            return
-        if idx == 0:
-            await message.reply("Ты не можешь себя удалить из очереди, так как сейчас твоя очередь. Чтобы пропустить используй /finished")
-            return
-
-        removed = queue.pop(idx)
-        await save_queue_for_key(key, queue)
-        await _cancel_pending_for_user(key, uid)
-        await message.reply("Я устал ждать тебя и удалил из очереди. Теперь, чтобы вернуться в очередь нажми /standup")
 
 @dp.message(Command("list"))
 async def cmd_list(message: types.Message):
-    """
-    Show queue. Format:
-    1) @ivan (в отчёте)
-    2) @petr
-    """
-    chat = message.chat
-    thread_id = getattr(message, "message_thread_id", None)
-    key = _chat_key(chat.id, thread_id)
+    chat_id = message.chat.id
+    queue = load_queue()
+    if not queue:
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать, нажми /standup.", message_thread_id=THREAD_ID)
+        return
 
-    async with _get_chat_lock(key):
-        queue = await load_queue_for_key(key)
-        if not queue:
-            await message.reply("Сейчас никого нет в очереди. Нажми /standup, чтобы начать.")
-            return
-        lines = []
-        for i, e in enumerate(queue, start=1):
-            disp = _entry_display(e)
-            if i == 1 and e.get("status") == "in_report":
-                lines.append(f"{i}) {disp} (в отчете)")
-            else:
-                lines.append(f"{i}) {disp}")
-        await message.reply("\n".join(lines))
+    text = "Текущая очередь:\n"
+    for i, u in enumerate(queue, start=1):
+        status = " (в отчёте)" if u["status"] == "in_progress" else ""
+        text += f"{i}. @{u['username']}{status}\n"
 
-# ---------------- Startup / Shutdown ----------------
-async def _cancel_all_pending():
-    for key, per in list(_pending_timers.items()):
-        for uid, info in list(per.items()):
-            task = info.get("task")
-            if task and not task.done():
-                task.cancel()
-    _pending_timers.clear()
+    await bot.send_message(chat_id, text, message_thread_id=THREAD_ID)
 
-async def main():
-    await _ensure_storage_exists()
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await _cancel_all_pending()
-        await bot.session.close()
 
+@dp.message(Command("delete"))
+async def cmd_delete(message: types.Message):
+    chat_id = message.chat.id
+    queue = load_queue()
+    user_id = message.from_user.id
+
+    if not queue or not any(u["id"] == user_id for u in queue):
+        await bot.send_message(chat_id, "Тебя нет в очереди 😳", message_thread_id=THREAD_ID)
+        return
+
+    if queue[0]["id"] == user_id:
+        await bot.send_message(
+            chat_id,
+            "Ты не можешь себя удалить из очереди, так как сейчас твоя очередь. "
+            "Сначала нажми /takereport и потом /finished, так ты отдашь очередь следующему участнику.",
+            message_thread_id=THREAD_ID
+        )
+        return
+
+    queue = [u for u in queue if u["id"] != user_id]
+    save_queue(queue)
+    await bot.send_message(chat_id, "Ну вот блин, потеряли бойца 😅 Если захочешь вернуться, нажми /standup", message_thread_id=THREAD_ID)
+
+
+# ------------------- Реакции на /da и /no -------------------
+@dp.message(Command("da"))
+async def cmd_da(message: types.Message):
+    chat_id = message.chat.id
+    queue = load_queue()
+    if not queue:
+        return
+
+    user_id = message.from_user.id
+    if queue[0]["id"] == user_id and queue[0].get("awaiting_response"):
+        queue[0]["awaiting_response"] = False
+        save_queue(queue)
+        await bot.send_message(chat_id, "Хорошо, когда закончишь правки, нажми /finished", message_thread_id=THREAD_ID)
+        asyncio.create_task(remind_user_in_report(chat_id, user_id, queue[0]["username"]))
+
+
+@dp.message(Command("no"))
+async def cmd_no(message: types.Message):
+    chat_id = message.chat.id
+    queue = load_queue()
+    if not queue:
+        return
+
+    user_id = message.from_user.id
+    if queue[0]["id"] == user_id:
+        username = queue[0]["username"]
+        queue.pop(0)
+        save_queue(queue)
+        await bot.send_message(chat_id, "Так, так, а мы тут все ждём тебя😭 Ладно, спасибо, передаю очередь другому.", message_thread_id=THREAD_ID)
+        if queue:
+            next_user = queue[0]["username"]
+            await bot.send_message(chat_id, f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport", message_thread_id=THREAD_ID)
+
+
+# ------------------- Запуск -------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(dp.start_polling(bot))
