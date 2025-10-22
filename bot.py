@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 
 # ---------------- CONFIG ----------------
 # ВСТАВЬ СВОЙ ТОКЕН (тот, который ты предоставил)
-TOKEN = "8246901324:AAH3FHDKTJpVwPi66aZGU1PBv6R22WxPQL0"
+TOKEN = 
 
 QUEUE_FILE = "queue.json"
 # Тайминги (в секундах)
