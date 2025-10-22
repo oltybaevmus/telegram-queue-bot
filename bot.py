@@ -58,7 +58,7 @@ async def remind_to_take_report(chat_id, message_thread_id, user_id, username):
     save_queue(queue)
     await bot.send_message(
         chat_id,
-        f"@{username}, я устал ждать тебя и удалил из очереди 🫣 простии.... Если захочешь вернуться, нажми /standup",
+        f"@{username}, я устал ждать тебя и удалил из очереди 🫣, простиии. Если захочешь вернуться, нажми /standup",
         message_thread_id=message_thread_id
     )
 
@@ -75,7 +75,7 @@ async def remind_user_in_report(chat_id, message_thread_id, user_id, username):
     await asyncio.sleep(REPORT_TIMEOUT)
     queue = load_queue()
 
-    if not queue or queue[0]["id"] != user_id or queue[0]["status"] != "в отчете":
+    if not queue or queue[0]["id"] != user_id or queue[0]["status"] != "in_progress":
         return
 
     await bot.send_message(
@@ -95,7 +95,7 @@ async def remind_user_in_report(chat_id, message_thread_id, user_id, username):
         save_queue(queue)
         await bot.send_message(
             chat_id,
-            f"@{username}, я не дождался твоего ответа и удалил тебя из очереди🫣 прости.... "
+            f"@{username}, я не дождался твоего ответа и удалил тебя из очереди🫣, простиии. "
             f"Если захочешь вернуться, нажми /standup",
             message_thread_id=message_thread_id
         )
@@ -115,9 +115,10 @@ async def cmd_standup(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if any(u["id"] == user_id for u in queue):
-        await message.reply("Ты уже в очереди 👍", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Ты уже в очереди 👍", message_thread_id=message_thread_id)
         return
 
     queue.append({
@@ -129,18 +130,19 @@ async def cmd_standup(message: types.Message):
     save_queue(queue)
 
     position = len(queue)
-    await message.reply(
+    await bot.send_message(
+        chat_id,
         f"Добавил тебя в очередь, твоя позиция {position}. Сейчас в очереди {len(queue)} человек(а).",
         message_thread_id=message_thread_id
     )
 
     if len(queue) == 1:
         await bot.send_message(
-            message.chat.id,
+            chat_id,
             f"@{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
             message_thread_id=message_thread_id
         )
-        asyncio.create_task(remind_to_take_report(message.chat.id, message_thread_id, user_id, username))
+        asyncio.create_task(remind_to_take_report(chat_id, message_thread_id, user_id, username))
 
 
 @dp.message(Command("takereport"))
@@ -149,26 +151,27 @@ async def cmd_takereport(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue:
-        await message.reply("Очередь пустая. Чтобы встать в очередь нажми /standup.", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать в очередь нажми /standup.", message_thread_id=message_thread_id)
         return
 
     if queue[0]["id"] != user_id:
-        await message.reply("Ну куда ты, пока не твоя очередь, подожди чуть-чуть 😅", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Ну куда ты, пока не твоя очередь, подожди чуть-чуть 😅", message_thread_id=message_thread_id)
         return
 
     # Показываем фразу "Слава богу ты пришёл" только если был reminder
     if queue[0].get("reminded"):
-        await message.reply("Слава богу ты пришел(ла) 😂", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Слава богу ты пришел(ла)😂", message_thread_id=message_thread_id)
         queue[0]["reminded"] = False
 
     queue[0]["status"] = "in_progress"
     queue[0]["awaiting_response"] = False
     save_queue(queue)
 
-    await message.reply("Ты взял(а) отчет. Когда закончишь, нажми /finished", message_thread_id=message_thread_id)
-    asyncio.create_task(remind_user_in_report(message.chat.id, message_thread_id, user_id, username))
+    await bot.send_message(chat_id, "Ты взял(а) отчет. Когда закончишь, нажми /finished", message_thread_id=message_thread_id)
+    asyncio.create_task(remind_user_in_report(chat_id, message_thread_id, user_id, username))
 
 
 @dp.message(Command("finished"))
@@ -176,13 +179,14 @@ async def cmd_finished(message: types.Message):
     queue = load_queue()
     user_id = message.from_user.id
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue:
-        await message.reply("Очередь пустая. Чтобы встать, нажми /standup.", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать, нажми /standup.", message_thread_id=message_thread_id)
         return
 
     if queue[0]["id"] != user_id:
-        await message.reply("Понимаю, что не терпится, но ты не первый в очереди. Погоди немного 😁", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Понимаю, что не терпится, но ты не первый в очереди. Погоди немного 😁", message_thread_id=message_thread_id)
         return
 
     queue.pop(0)
@@ -190,14 +194,14 @@ async def cmd_finished(message: types.Message):
 
     if not queue:
         await bot.send_message(
-            message.chat.id,
+            chat_id,
             "В очереди никого нет, и я скучаю 😢 Нажми /standup, чтобы встать в очередь.",
             message_thread_id=message_thread_id
         )
     else:
         next_user = queue[0]["username"]
         await bot.send_message(
-            message.chat.id,
+            chat_id,
             f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
             message_thread_id=message_thread_id
         )
@@ -207,16 +211,17 @@ async def cmd_finished(message: types.Message):
 async def cmd_list(message: types.Message):
     queue = load_queue()
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue:
-        await message.reply("Очередь пустая. Чтобы встать, нажми /standup..", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Очередь пустая. Чтобы встать, нажми /standup.", message_thread_id=message_thread_id)
         return
 
     text = "Текущая очередь:\n"
     for i, u in enumerate(queue, start=1):
         status = " (в отчёте)" if u["status"] == "in_progress" else ""
         text += f"{i}. @{u['username']}{status}\n"
-    await message.reply(text, message_thread_id=message_thread_id)
+    await bot.send_message(chat_id, text, message_thread_id=message_thread_id)
 
 
 @dp.message(Command("delete"))
@@ -224,14 +229,16 @@ async def cmd_delete(message: types.Message):
     queue = load_queue()
     user_id = message.from_user.id
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue or not any(u["id"] == user_id for u in queue):
-        await message.reply("Тебя нет в очереди 😳", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Тебя нет в очереди 😳", message_thread_id=message_thread_id)
         return
 
     if queue[0]["id"] == user_id:
-        await message.reply(
-            "Ты не можешь себя удалить из очереди, так как сейчас твоя очередь. "
+        await bot.send_message(
+            chat_id,
+            "Ты не можешь себя удалить из очереди, так как сейчас твоя очеред. "
             "Сначала нажми /takereport и потом /finished, так ты отдашь очередь следующему участнику.",
             message_thread_id=message_thread_id
         )
@@ -239,7 +246,7 @@ async def cmd_delete(message: types.Message):
 
     queue = [u for u in queue if u["id"] != user_id]
     save_queue(queue)
-    await message.reply("Ну вот блин, потеряли бойца 😅 Если захочешь вернуться, нажми /standup", message_thread_id=message_thread_id)
+    await bot.send_message(chat_id, "Ну вот блин, потеряли бойца 😅 Если захочешь вернуться, нажми /standup", message_thread_id=message_thread_id)
 
 
 # ------------------- Реакции на /da и /no -------------------
@@ -247,6 +254,7 @@ async def cmd_delete(message: types.Message):
 async def cmd_da(message: types.Message):
     queue = load_queue()
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue:
         return
@@ -255,14 +263,15 @@ async def cmd_da(message: types.Message):
     if queue[0]["id"] == user_id and queue[0].get("awaiting_response"):
         queue[0]["awaiting_response"] = False
         save_queue(queue)
-        await message.reply("Хорошо, когда закончишь правки, нажми /finished", message_thread_id=message_thread_id)
-        asyncio.create_task(remind_user_in_report(message.chat.id, message_thread_id, user_id, queue[0]["username"]))
+        await bot.send_message(chat_id, "Хорошо, когда закончишь правки, нажми /finished", message_thread_id=message_thread_id)
+        asyncio.create_task(remind_user_in_report(chat_id, message_thread_id, user_id, queue[0]["username"]))
 
 
 @dp.message(Command("no"))
 async def cmd_no(message: types.Message):
     queue = load_queue()
     message_thread_id = message.message_thread_id
+    chat_id = message.chat.id
 
     if not queue:
         return
@@ -272,11 +281,11 @@ async def cmd_no(message: types.Message):
         username = queue[0]["username"]
         queue.pop(0)
         save_queue(queue)
-        await message.reply("Так, так, а мы тут все ждём тебя😭 Ладно, спасибо, передаю очередь другому.", message_thread_id=message_thread_id)
+        await bot.send_message(chat_id, "Так, так, а мы тут все ждём тебя😭 Ладно, спасибо, передаю очередь другому.", message_thread_id=message_thread_id)
         if queue:
             next_user = queue[0]["username"]
             await bot.send_message(
-                message.chat.id,
+                chat_id,
                 f"🔥 @{next_user}, твоя очередь! Когда зайдешь в отчет, нажми /takereport",
                 message_thread_id=message_thread_id
             )
@@ -285,3 +294,4 @@ async def cmd_no(message: types.Message):
 # ------------------- Запуск -------------------
 if __name__ == "__main__":
     asyncio.run(dp.start_polling(bot))
+
