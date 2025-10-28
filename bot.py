@@ -129,7 +129,7 @@ async def _tag_next_and_schedule(chat_id: int, thread_id: Optional[int], key: st
     username = next_entry.get("username") or next_entry.get("first_name", "")
     # send tag message in the same thread (not as reply)
     try:
-        await bot.send_message(chat_id, f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. ЧТобы пропустить, нажми /skip", message_thread_id=thread_id)
+        await bot.send_message(chat_id, f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. Чтобы пропустить, нажми /skip", message_thread_id=thread_id)
     except Exception:
         # ignore
         pass
@@ -154,7 +154,7 @@ async def _schedule_pre_take(chat_id: int, thread_id: Optional[int], key: str, u
                 return
             # warn
             username = queue[0].get("username") or queue[0].get("first_name", "")
-            warn_text = f"@{username}, твоя очередь! Если не нажмёшь /takereport в течение 5 минут, я буду вынужден удалить тебя из очереди😔."
+            warn_text = f"@{username}, твоя очередь! Если не нажмешь /takereport в течение 5 минут, я буду вынужден удалить тебя из очереди😔. Чтобы пропустить, нажми /skip. "
             try:
                 await bot.send_message(chat_id, warn_text, message_thread_id=thread_id)
             except Exception:
@@ -326,9 +326,9 @@ async def cmd_standup(message: types.Message):
     # If became first -> tag + schedule pre_take
     if pos == 1:
         try:
-            await bot.send_message(chat.id, f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport", message_thread_id=thread_id)
+            await bot.send_message(chat.id, f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. Чтобы пропустить, нажми /skip", message_thread_id=thread_id)
         except Exception:
-            await message.reply(f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport")
+            await message.reply(f"🔥 @{username}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. Чтобы пропустить, нажми /skip")
         await _schedule_pre_take(chat.id, thread_id, key, entry)
 
 @dp.message(Command("takereport"))
@@ -390,7 +390,7 @@ async def cmd_finished(message: types.Message):
 
     idx = _find_index(queue, uid)
     if idx is None:
-        await message.reply("Тебя нет в очереди. Чтобы встать в очередь нажми /standup")
+        await message.reply("Ну не финишурай, а сначала встань в очередь. Чтобы встать в очередь нажми /standup")
         return
 
     if idx != 0:
@@ -433,9 +433,9 @@ async def cmd_finished(message: types.Message):
     if queue:
         next_user = queue[0]
         try:
-            await bot.send_message(chat.id, f"🔥 @{next_user.get('username')}, твоя очередь! Когда зайдешь в отчет, нажми /takereport", message_thread_id=thread_id)
+            await bot.send_message(chat.id, f"🔥 @{next_user.get('username')}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. Чтобы пропустить, нажми /skip", message_thread_id=thread_id)
         except Exception:
-            await message.reply(f"🔥 @{next_user.get('username')}, твоя очередь! Когда зайдешь в отчет, нажми /takereport")
+            await message.reply(f"🔥 @{next_user.get('username')}, твоя очередь! Когда зайдешь в отчет, нажми /takereport. Чтобы пропустить, нажми /skip")
         # schedule pre_take for the new first
         await _schedule_pre_take(chat.id, thread_id, key, queue[0])
     else:
@@ -508,12 +508,12 @@ async def cmd_skip(message: types.Message):
 
     queue = load_queue(key)
     if not queue:
-        await message.reply("Очередь пустая. Чтобы встать в очередь, нажми /standup.")
+        await message.reply("Ну что ты тут скипаешь, тебя же нет в очереди. Двай не хулигань мне тут, а нажми /standup.")
         return
 
     idx = _find_index(queue, uid)
     if idx is None:
-        await message.reply("Ну что ты тут скипаешь, тебя же нет в очереди. Двай не хулигань мне тут.")
+        await message.reply("Ну что ты тут скипаешь, тебя же нет в очереди. Двай не хулигань мне тут, а нажми /standup.")
         return
 
     if idx != 0:
@@ -713,7 +713,7 @@ async def cmd_no(message: types.Message):
     save_queue(key, queue)
     # cancel tasks
     _cancel_all_for_user(key, uid)
-    await message.reply("Так, так, а мы тут все ждём тебя😭 Ладно, спасибо, передаю очередь другому.")
+    await message.reply("Так, так, а мы тут все ждем тебя😭 Ладно, спасибо, передаю очередь другому. Если тут никого нет, то чтобы встать в очередь нажми /standup")
     if queue:
         await _tag_next_and_schedule(chat.id, thread_id, key)
 
