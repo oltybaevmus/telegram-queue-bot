@@ -764,6 +764,9 @@ async def _cancel_all():
 async def main():
     _ensure_storage_file()
 
+async def main():
+    _ensure_storage_file()
+
     # Удаляем webhook, если он остался (Railway использует polling)
     await bot.delete_webhook(drop_pending_updates=True)
 
@@ -772,9 +775,12 @@ async def main():
     finally:
         await _cancel_all()
         await bot.session.close()
-        
-        if __name__ == "__main__":
+
+
+if __name__ == "__main__":
     asyncio.run(main())
+
+    
         
 
 
